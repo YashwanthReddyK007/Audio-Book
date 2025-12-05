@@ -1,33 +1,20 @@
-# Core Dependencies - Compatible with Streamlit Cloud
-streamlit>=1.28.0
-transformers>=4.30.0
-scipy>=1.10.0
-numpy>=1.24.0,<2.0.0
+# Core Framework
+streamlit
 
-# PyTorch - CPU version for Streamlit Cloud compatibility
-torch>=2.0.0
-torchaudio>=2.0.0
+# Story Generation
+transformers
+torch
+accelerate
 
-# TTS Engines
-gTTS>=2.3.0
+# Audio Generation - Bark TTS (small) + gTTS fallback
+gTTS
+scipy
 
-# Additional required dependencies
-accelerate>=0.20.0
-sentencepiece>=0.1.99
-protobuf>=3.20.0,<5.0.0
+# Basic dependencies
+numpy
+requests
+sentencepiece
+protobuf
 
-# Streamlit Cloud compatible versions
-huggingface-hub>=0.16.0
-tokenizers>=0.13.0
-filelock>=3.12.0
-requests>=2.31.0
-tqdm>=4.65.0
-pyyaml>=6.0
-
-# For audio processing
-soundfile>=0.12.0
-
-# Note for Streamlit Cloud:
-# This requirements.txt is optimized for CPU-only deployment
-# GPU support is not available on Streamlit Community Cloud
-# All packages use flexible version constraints (>=) for better compatibility
+# Optional: Uncomment if scipy installation fails
+# --extra-index-url https://download.pytorch.org/whl/cpu
