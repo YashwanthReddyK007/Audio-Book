@@ -7,6 +7,8 @@ import random
 import re
 import base64
 from pathlib import Path
+from gtts import gTTS
+import os
 
 # Page configuration
 st.set_page_config(
@@ -47,6 +49,13 @@ st.markdown("""
         border-radius: 10px;
         margin: 20px 0;
     }
+    .warning-box {
+        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        color: white;
+        padding: 15px;
+        border-radius: 10px;
+        margin: 15px 0;
+    }
     .stButton>button {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
@@ -79,23 +88,31 @@ st.markdown("""
 
 
 class StreamlitStoryGenerator:
-    """Story Generator optimized for Streamlit"""
+    """Story Generator with Bark TTS and gTTS fallback"""
     
     VOICE_PROFILES = {
         "Deep Narrator 🎭": {
             "preset": "v2/en_speaker_6",
+            "gtts_lang": "en",
+            "gtts_tld": "com",
             "description": "Dramatic, warm voice perfect for epic tales"
         },
         "Friendly Narrator 🌟": {
             "preset": "v2/en_speaker_3",
+            "gtts_lang": "en",
+            "gtts_tld": "com.au",
             "description": "Engaging, cheerful voice for adventures"
         },
         "Mysterious Narrator 🌙": {
             "preset": "v2/en_speaker_9",
+            "gtts_lang": "en",
+            "gtts_tld": "co.uk",
             "description": "Dark, captivating voice for thrillers"
         },
         "Wise Narrator 🦉": {
             "preset": "v2/en_speaker_7",
+            "gtts_lang": "en",
+            "gtts_tld": "co.in",
             "description": "Calm, thoughtful voice for wisdom tales"
         }
     }
@@ -109,24 +126,46 @@ class StreamlitStoryGenerator:
     @staticmethod
     @st.cache_resource
     def load_models():
-        """Load models with caching"""
-        with st.spinner("🔮 Loading AI models... (this may take 30-60 seconds)"):
-            story_gen = pipeline(
-                "text-generation",
-                model="roneneldan/TinyStories-33M",
-                device=0 if torch.cuda.is_available() else -1
-            )
-            
-            processor = AutoProcessor.from_pretrained("suno/bark-small")
-            bark_model = BarkModel.from_pretrained("suno/bark-small")
-            
-            if torch.cuda.is_available():
-                bark_model = bark_model.to("cuda")
+        """Load models with caching and fallback handling"""
+        story_gen = None
+        processor = None
+        bark_model = None
+        bark_available = False
+        
+        try:
+            with st.spinner("🔮 Loading AI models... (this may take 30-60 seconds)"):
+                # Load story generator
+                story_gen = pipeline(
+                    "text-generation",
+                    model="roneneldan/TinyStories-33M",
+                    device=0 if torch.cuda.is_available() else -1
+                )
                 
-        return story_gen, processor, bark_model
+                # Try to load Bark TTS
+                try:
+                    processor = AutoProcessor.from_pretrained("suno/bark-small")
+                    bark_model = BarkModel.from_pretrained("suno/bark-small")
+                    
+                    if torch.cuda.is_available():
+                        bark_model = bark_model.to("cuda")
+                    
+                    bark_available = True
+                    st.success("✅ Bark TTS loaded successfully!")
+                    
+                except Exception as bark_error:
+                    st.warning(f"⚠️ Bark TTS failed to load: {str(bark_error)}")
+                    st.info("📢 Falling back to Google TTS (gTTS) for audio generation")
+                    bark_available = False
+                    
+        except Exception as e:
+            st.error(f"❌ Error loading models: {str(e)}")
+            raise
+            
+        return story_gen, processor, bark_model, bark_available
     
     def __init__(self):
-        self.story_generator, self.processor, self.bark_model = self.load_models()
+        self.story_generator, self.processor, self.bark_model, self.bark_available = self.load_models()
+        self.tts_method = "Bark TTS" if self.bark_available else "Google TTS (gTTS)"
     
     def enhance_story_prompt(self, prompt):
         """Add storytelling elements"""
@@ -280,76 +319,165 @@ class StreamlitStoryGenerator:
         
         return chunks
     
-    def text_to_speech(self, text, voice_preset, progress_bar=None):
-        """Convert text to speech"""
-        chunks = self.split_into_chunks(text, max_chars=200)
-        audio_segments = []
-        sample_rate = None
-        
-        total_chunks = len(chunks)
-        for i, chunk in enumerate(chunks):
+    def text_to_speech_gtts(self, text, voice_config, progress_bar=None):
+        """Convert text to speech using gTTS (fallback)"""
+        try:
             if progress_bar:
-                progress = int((i / total_chunks) * 100)
-                progress_bar.progress(progress)
+                progress_bar.progress(30)
             
-            if i == 0:
-                narration_chunk = f"♪ [reading a story book] ♪ {chunk}"
-            else:
-                narration_chunk = f"♪ {chunk}"
-            
-            inputs = self.processor(
-                narration_chunk,
-                voice_preset=voice_preset,
-                return_tensors="pt"
+            # Create gTTS object with specified voice
+            tts = gTTS(
+                text=text,
+                lang=voice_config['gtts_lang'],
+                tld=voice_config['gtts_tld'],
+                slow=False
             )
             
-            if torch.cuda.is_available():
-                inputs = {k: v.to("cuda") for k, v in inputs.items()}
+            if progress_bar:
+                progress_bar.progress(60)
             
-            with torch.no_grad():
-                speech_output = self.bark_model.generate(
-                    **inputs,
-                    temperature=0.6,
-                    fine_temperature=0.4,
-                    coarse_temperature=0.6,
-                    do_sample=True,
-                    semantic_temperature=0.8
+            # Save to temporary file
+            temp_file = "temp_gtts_audio.mp3"
+            tts.save(temp_file)
+            
+            if progress_bar:
+                progress_bar.progress(80)
+            
+            # Convert MP3 to WAV for consistency
+            # Read the MP3 and convert (using scipy for basic conversion)
+            # Note: For production, consider using pydub for better MP3 handling
+            
+            if progress_bar:
+                progress_bar.progress(100)
+            
+            return temp_file, "mp3"
+            
+        except Exception as e:
+            st.error(f"❌ gTTS failed: {str(e)}")
+            raise
+    
+    def text_to_speech_bark(self, text, voice_preset, progress_bar=None):
+        """Convert text to speech using Bark TTS"""
+        try:
+            chunks = self.split_into_chunks(text, max_chars=200)
+            audio_segments = []
+            sample_rate = None
+            
+            total_chunks = len(chunks)
+            for i, chunk in enumerate(chunks):
+                if progress_bar:
+                    progress = int((i / total_chunks) * 100)
+                    progress_bar.progress(progress)
+                
+                if i == 0:
+                    narration_chunk = f"♪ [reading a story book] ♪ {chunk}"
+                else:
+                    narration_chunk = f"♪ {chunk}"
+                
+                inputs = self.processor(
+                    narration_chunk,
+                    voice_preset=voice_preset,
+                    return_tensors="pt"
                 )
-                audio_array = speech_output.cpu().numpy().squeeze()
+                
+                if torch.cuda.is_available():
+                    inputs = {k: v.to("cuda") for k, v in inputs.items()}
+                
+                with torch.no_grad():
+                    speech_output = self.bark_model.generate(
+                        **inputs,
+                        temperature=0.6,
+                        fine_temperature=0.4,
+                        coarse_temperature=0.6,
+                        do_sample=True,
+                        semantic_temperature=0.8
+                    )
+                    audio_array = speech_output.cpu().numpy().squeeze()
+                
+                audio_segments.append(audio_array)
+                
+                if sample_rate is None:
+                    sample_rate = self.bark_model.generation_config.sample_rate
             
-            audio_segments.append(audio_array)
+            # Combine audio
+            silence = np.zeros(int(sample_rate * 0.3))
+            full_audio_parts = []
+            for i, segment in enumerate(audio_segments):
+                full_audio_parts.append(segment)
+                if i < len(audio_segments) - 1:
+                    full_audio_parts.append(silence)
             
-            if sample_rate is None:
-                sample_rate = self.bark_model.generation_config.sample_rate
+            full_audio = np.concatenate(full_audio_parts)
+            
+            if progress_bar:
+                progress_bar.progress(100)
+            
+            return full_audio, sample_rate
+            
+        except Exception as e:
+            st.error(f"❌ Bark TTS failed: {str(e)}")
+            raise
+    
+    def text_to_speech(self, text, voice_config, progress_bar=None):
+        """Convert text to speech with automatic fallback"""
+        # Try Bark first if available
+        if self.bark_available:
+            try:
+                st.info("🎤 Using Bark TTS for high-quality narration...")
+                audio_data, sample_rate = self.text_to_speech_bark(
+                    text, 
+                    voice_config['preset'], 
+                    progress_bar
+                )
+                return audio_data, sample_rate, "wav"
+                
+            except Exception as bark_error:
+                st.warning(f"⚠️ Bark TTS failed: {str(bark_error)}")
+                st.info("🔄 Switching to Google TTS (gTTS)...")
+                self.bark_available = False  # Disable for future calls
         
-        # Combine audio
-        silence = np.zeros(int(sample_rate * 0.3))
-        full_audio_parts = []
-        for i, segment in enumerate(audio_segments):
-            full_audio_parts.append(segment)
-            if i < len(audio_segments) - 1:
-                full_audio_parts.append(silence)
-        
-        full_audio = np.concatenate(full_audio_parts)
-        
-        if progress_bar:
-            progress_bar.progress(100)
-        
-        return full_audio, sample_rate
+        # Fall back to gTTS
+        try:
+            st.info("🎤 Using Google TTS for narration...")
+            audio_file, format_type = self.text_to_speech_gtts(
+                text,
+                voice_config,
+                progress_bar
+            )
+            return audio_file, None, format_type
+            
+        except Exception as gtts_error:
+            st.error(f"❌ Both TTS methods failed!")
+            st.error(f"Bark error: {bark_error if 'bark_error' in locals() else 'Not attempted'}")
+            st.error(f"gTTS error: {str(gtts_error)}")
+            raise
 
 
-def get_audio_download_link(audio_data, sample_rate, filename="story.wav"):
+def get_audio_download_link(audio_data, sample_rate=None, filename="story.wav", format_type="wav"):
     """Create download link for audio"""
-    audio_int16 = (audio_data * 32767).astype(np.int16)
-    
-    # Save to temporary file
-    scipy.io.wavfile.write(filename, sample_rate, audio_int16)
-    
-    with open(filename, "rb") as f:
-        audio_bytes = f.read()
-    
-    b64 = base64.b64encode(audio_bytes).decode()
-    return f'<a href="data:audio/wav;base64,{b64}" download="{filename}">📥 Download Audio Story</a>'
+    try:
+        if format_type == "wav" and sample_rate:
+            # Bark TTS output
+            audio_int16 = (audio_data * 32767).astype(np.int16)
+            scipy.io.wavfile.write(filename, sample_rate, audio_int16)
+            
+            with open(filename, "rb") as f:
+                audio_bytes = f.read()
+            
+            b64 = base64.b64encode(audio_bytes).decode()
+            return f'<a href="data:audio/wav;base64,{b64}" download="{filename}">📥 Download Audio Story (WAV)</a>'
+        
+        elif format_type == "mp3":
+            # gTTS output
+            with open(audio_data, "rb") as f:
+                audio_bytes = f.read()
+            
+            b64 = base64.b64encode(audio_bytes).decode()
+            return f'<a href="data:audio/mp3;base64,{b64}" download="story.mp3">📥 Download Audio Story (MP3)</a>'
+            
+    except Exception as e:
+        st.error(f"Error creating download link: {str(e)}")
+        return ""
 
 
 def main():
@@ -366,6 +494,12 @@ def main():
         st.session_state.generator = StreamlitStoryGenerator()
     
     generator = st.session_state.generator
+    
+    # Show TTS method being used
+    if generator.bark_available:
+        st.sidebar.success(f"🎤 Audio Engine: **Bark TTS** (High Quality)")
+    else:
+        st.sidebar.info(f"🎤 Audio Engine: **Google TTS** (Fallback)")
     
     # Sidebar configuration
     with st.sidebar:
@@ -397,6 +531,20 @@ def main():
         
         # Info
         st.info("💡 **Tips:**\n- Simple prompts work best\n- Be creative with themes\n- Generation takes 1-3 minutes")
+        
+        # TTS Info
+        with st.expander("ℹ️ About Audio Engines"):
+            st.markdown("""
+            **Bark TTS** (Primary):
+            - High-quality, expressive narration
+            - Multiple voice presets
+            - Slower but better quality
+            
+            **Google TTS** (Fallback):
+            - Fast and reliable
+            - Good quality voice synthesis
+            - Used if Bark fails to load
+            """)
     
     # Main content
     col1, col2 = st.columns([2, 1])
@@ -459,49 +607,65 @@ def main():
                 st.markdown("### 🎤 Generating Audio...")
                 progress_audio = st.progress(0)
                 
-                with st.spinner("Creating narration..."):
-                    audio_data, sample_rate = generator.text_to_speech(
-                        story_text,
-                        voice_info['preset'],
-                        progress_bar=progress_audio
+                try:
+                    with st.spinner("Creating narration..."):
+                        audio_result, sample_rate, format_type = generator.text_to_speech(
+                            story_text,
+                            voice_info,
+                            progress_bar=progress_audio
+                        )
+                    
+                    st.success(f"✅ Audio narration complete using {generator.tts_method}!")
+                    
+                    # Audio player
+                    st.markdown("### 🔊 Listen to Your Story")
+                    
+                    if format_type == "wav":
+                        # Bark TTS output
+                        filename = "generated_story.wav"
+                        audio_int16 = (audio_result * 32767).astype(np.int16)
+                        scipy.io.wavfile.write(filename, sample_rate, audio_int16)
+                        st.audio(filename, format="audio/wav")
+                        
+                        # Stats
+                        duration = len(audio_result) / sample_rate
+                        
+                    elif format_type == "mp3":
+                        # gTTS output
+                        st.audio(audio_result, format="audio/mp3")
+                        
+                        # Estimate duration (rough estimate)
+                        word_count = len(story_text.split())
+                        duration = word_count / 2.5  # Average speaking rate
+                    
+                    # Download button
+                    st.markdown(
+                        get_audio_download_link(audio_result, sample_rate, format_type=format_type),
+                        unsafe_allow_html=True
                     )
-                
-                st.success("✅ Audio narration complete!")
-                
-                # Audio player
-                st.markdown("### 🔊 Listen to Your Story")
-                
-                # Save and display audio
-                filename = "generated_story.wav"
-                audio_int16 = (audio_data * 32767).astype(np.int16)
-                scipy.io.wavfile.write(filename, sample_rate, audio_int16)
-                
-                st.audio(filename, format="audio/wav")
-                
-                # Download button
-                st.markdown(
-                    get_audio_download_link(audio_data, sample_rate, filename),
-                    unsafe_allow_html=True
-                )
-                
-                # Stats
-                duration = len(audio_data) / sample_rate
-                word_count = len(story_text.split())
-                
-                st.markdown(f"""
-                <div class="success-box">
-                    <h3>📊 Story Statistics</h3>
-                    <p>📝 Words: {word_count}</p>
-                    <p>⏱️ Duration: {duration:.1f} seconds ({duration/60:.1f} minutes)</p>
-                    <p>🎙️ Voice: {voice_name}</p>
-                </div>
-                """, unsafe_allow_html=True)
+                    
+                    # Stats
+                    word_count = len(story_text.split())
+                    
+                    st.markdown(f"""
+                    <div class="success-box">
+                        <h3>📊 Story Statistics</h3>
+                        <p>📝 Words: {word_count}</p>
+                        <p>⏱️ Duration: {duration:.1f} seconds ({duration/60:.1f} minutes)</p>
+                        <p>🎙️ Voice: {voice_name}</p>
+                        <p>🎤 Engine: {generator.tts_method}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                except Exception as e:
+                    st.error(f"❌ Audio generation failed: {str(e)}")
+                    st.warning("The story text is still available above, but audio could not be generated.")
     
     # Footer
     st.markdown("---")
     st.markdown("""
         <div style='text-align: center; color: white; padding: 20px;'>
-            <p>Powered by AI • TinyStories-33M + Bark TTS</p>
+            <p>Powered by AI • TinyStories-33M + Bark TTS/gTTS</p>
             <p>Made with ❤️ using Streamlit</p>
         </div>
     """, unsafe_allow_html=True)
