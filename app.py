@@ -1,707 +1,570 @@
-import streamlit as st
-from transformers import pipeline, AutoProcessor, BarkModel
+# ========================================
+# AI STORY GENERATOR - USER-CONTROLLED VERSION
+# With Parler-TTS for natural narration
+# Story first, then audio with permission
+# ========================================
+
+# STEP 1: Install dependencies
+print("📦 Installing dependencies...")
+print("This may take 2-3 minutes on first run...\n")
+
+# Install transformers with Parler-TTS support
+!pip install -q --upgrade transformers accelerate
+!pip install -q torch scipy soundfile sentencepiece protobuf
+
+# Try to install parler-tts package
+!pip install -q git+https://github.com/huggingface/parler-tts.git
+
+# Install gTTS as reliable fallback
+!pip install -q gTTS
+
+print("✅ Dependencies installed!\n")
+
+# STEP 2: Import libraries
+print("📚 Importing libraries...")
+
+# Import core libraries
+from transformers import pipeline, AutoTokenizer
 import torch
 import scipy.io.wavfile
+import soundfile as sf
 import numpy as np
 import random
 import re
-import base64
 from gtts import gTTS
-import os
 import gc
+from IPython.display import Audio, display, clear_output
+import time
 
-# Page configuration
-st.set_page_config(
-    page_title="AI Story Generator",
-    page_icon="📚",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Try to import Parler-TTS with fallback handling
+ParlerTTSForConditionalGeneration = None
+PARLER_AVAILABLE = False
 
-# Custom CSS for aesthetic design
-st.markdown("""
-<style>
-    .main {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
-    .stApp {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
-    .story-box {
-        background: white;
-        padding: 30px;
-        border-radius: 15px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.1);
-        margin: 20px 0;
-    }
-    .title-box {
-        background: rgba(255,255,255,0.95);
-        padding: 40px;
-        border-radius: 20px;
-        text-align: center;
-        margin-bottom: 30px;
-        box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-    }
-    .success-box {
-        background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-        color: white;
-        padding: 20px;
-        border-radius: 10px;
-        margin: 20px 0;
-    }
-    .warning-box {
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-        color: white;
-        padding: 15px;
-        border-radius: 10px;
-        margin: 15px 0;
-    }
-    .stButton>button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        padding: 12px 30px;
-        border-radius: 25px;
-        font-size: 16px;
-        font-weight: bold;
-        transition: all 0.3s;
-    }
-    .stButton>button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 5px 20px rgba(0,0,0,0.2);
-    }
-    h1 {
-        color: #667eea;
-        font-size: 3em;
-        margin-bottom: 10px;
-    }
-    h2 {
-        color: #764ba2;
-    }
-    .subtitle {
-        color: #666;
-        font-size: 1.2em;
-        margin-top: 10px;
-    }
-</style>
-""", unsafe_allow_html=True)
+try:
+    from parler_tts import ParlerTTSForConditionalGeneration
+    PARLER_AVAILABLE = True
+    print("✅ Parler-TTS imported from parler_tts package")
+except ImportError:
+    try:
+        from transformers import ParlerTTSForConditionalGeneration
+        PARLER_AVAILABLE = True
+        print("✅ Parler-TTS imported from transformers")
+    except ImportError:
+        print("⚠️  Parler-TTS not available - will use gTTS only")
+        print("   (This is fine! gTTS works great for stories)\n")
 
+print("✅ All libraries loaded!\n")
 
-class StreamlitStoryGenerator:
-    """Story Generator with Bark TTS (small) and gTTS fallback"""
+# ========================================
+# STORYTELLING GENERATOR CLASS
+# ========================================
+
+class StorytellingGenerator:
+    """User-controlled storytelling with audio generation"""
     
-    VOICE_PROFILES = {
-        "Deep Narrator 🎭": {
-            "preset": "v2/en_speaker_6",
-            "gtts_lang": "en",
-            "gtts_tld": "com",
-            "description": "Dramatic, warm voice perfect for epic tales"
+    # Voice descriptions
+    VOICES = {
+        1: {
+            "name": "Warm Storyteller",
+            "parler": "A warm, engaging narrator with moderate pace and expressive delivery, perfect for bedtime stories.",
+            "gtts_tld": "com"
         },
-        "Friendly Narrator 🌟": {
-            "preset": "v2/en_speaker_3",
-            "gtts_lang": "en",
-            "gtts_tld": "com.au",
-            "description": "Engaging, cheerful voice for adventures"
+        2: {
+            "name": "Dramatic Narrator",
+            "parler": "A deep, dramatic voice with slow pace and theatrical delivery, ideal for epic tales and adventures.",
+            "gtts_tld": "co.uk"
         },
-        "Mysterious Narrator 🌙": {
-            "preset": "v2/en_speaker_9",
-            "gtts_lang": "en",
-            "gtts_tld": "co.uk",
-            "description": "Dark, captivating voice for thrillers"
+        3: {
+            "name": "Calm Narrator",
+            "parler": "A calm, soothing narrator with gentle pace and clear pronunciation, great for peaceful stories.",
+            "gtts_tld": "com.au"
         },
-        "Wise Narrator 🦉": {
-            "preset": "v2/en_speaker_7",
-            "gtts_lang": "en",
-            "gtts_tld": "ca",
-            "description": "Calm, thoughtful voice for wisdom tales"
+        4: {
+            "name": "Energetic Narrator",
+            "parler": "An energetic, upbeat voice with fast pace and enthusiastic delivery, perfect for exciting adventures.",
+            "gtts_tld": "com"
+        },
+        5: {
+            "name": "Mysterious Narrator",
+            "parler": "A mysterious, whispery voice with varying pace and enigmatic delivery, ideal for suspenseful tales.",
+            "gtts_tld": "co.uk"
         }
     }
     
-    STORY_LENGTHS = {
-        "Quick Tale (150 words)": {"tokens": 200, "words": 150},
-        "Standard Story (300 words)": {"tokens": 400, "words": 300},
-        "Extended Story (500 words)": {"tokens": 650, "words": 500},
-    }
-    
-    @staticmethod
-    @st.cache_resource(show_spinner=False)
-    def load_models():
-        """Load models with aggressive memory optimization"""
-        # Set cache directories for Streamlit Cloud
-        os.environ['TRANSFORMERS_CACHE'] = '/tmp/transformers'
-        os.environ['HF_HOME'] = '/tmp/huggingface'
-        os.environ['TORCH_HOME'] = '/tmp/torch'
-        
-        story_gen = None
-        processor = None
-        bark_model = None
-        bark_available = False
-        loading_messages = []
-        
-        try:
-            # Load story generator first (smaller model)
-            loading_messages.append("📖 Loading story generator...")
-            story_gen = pipeline(
-                "text-generation",
-                model="roneneldan/TinyStories-33M",
-                device=-1,  # CPU only
-                model_kwargs={"low_cpu_mem_usage": True}
-            )
-            loading_messages.append("✅ Story generator loaded")
-            
-            # Force garbage collection before loading Bark
-            gc.collect()
-            
-            # Try to load Bark TTS (small version)
-            try:
-                loading_messages.append("🎤 Loading Bark TTS (small)...")
-                
-                processor = AutoProcessor.from_pretrained(
-                    "suno/bark-small",
-                    cache_dir='/tmp/transformers'
-                )
-                
-                bark_model = BarkModel.from_pretrained(
-                    "suno/bark-small",
-                    cache_dir='/tmp/transformers',
-                    torch_dtype=torch.float32,  # Use float32 for CPU
-                    low_cpu_mem_usage=True
-                )
-                
-                # Keep on CPU (no GPU on Streamlit Cloud)
-                bark_model = bark_model.to('cpu')
-                
-                # Set to eval mode to save memory
-                bark_model.eval()
-                
-                bark_available = True
-                loading_messages.append("✅ Bark TTS loaded successfully!")
-                
-            except Exception as bark_error:
-                loading_messages.append(f"⚠️ Bark TTS failed: {str(bark_error)[:100]}")
-                loading_messages.append("📢 Will use gTTS fallback")
-                bark_available = False
-                
-                # Clean up any partial Bark loading
-                if bark_model is not None:
-                    del bark_model
-                if processor is not None:
-                    del processor
-                processor = None
-                bark_model = None
-                gc.collect()
-                
-        except Exception as e:
-            loading_messages.append(f"❌ Critical error: {str(e)[:100]}")
-            
-        return story_gen, processor, bark_model, bark_available, loading_messages
-    
     def __init__(self):
-        """Initialize with memory-optimized setup"""
-        result = self.load_models()
-        self.story_generator = result[0]
-        self.processor = result[1]
-        self.bark_model = result[2]
-        self.bark_available = result[3]
-        self.loading_messages = result[4]
+        """Initialize models"""
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.story_gen = None
+        self.parler_model = None
+        self.parler_tokenizer = None
+        self.parler_loaded = False
+        self.current_story = None
         
-        self.model_loaded = self.story_generator is not None
-        self.tts_method = "Bark TTS (Small)" if self.bark_available else "Google TTS (gTTS)"
+    def load_story_model(self):
+        """Load story generation model"""
+        if self.story_gen is not None:
+            return
+            
+        print(f"🖥️  Using device: {self.device.upper()}")
+        print("📖 Loading story generator...")
+        start = time.time()
+        
+        self.story_gen = pipeline(
+            "text-generation",
+            model="roneneldan/TinyStories-33M",
+            device=0 if self.device == "cuda" else -1
+        )
+        
+        print(f"✅ Story generator loaded in {time.time()-start:.1f}s\n")
     
-    def enhance_story_prompt(self, prompt):
-        """Add storytelling elements"""
-        story_starters = [
-            "Once upon a time, there was ",
-            "One day, ",
-            "In a magical land, there lived ",
-            "Long ago, ",
-        ]
-        
-        if not any(prompt.lower().startswith(starter.lower()[:10]) for starter in story_starters):
-            starter = random.choice(story_starters)
-            prompt = starter + prompt.lower()
-        
-        return prompt
+    def load_parler_model(self):
+        """Load Parler-TTS model only when needed"""
+        if self.parler_loaded or not PARLER_AVAILABLE or ParlerTTSForConditionalGeneration is None:
+            return False
+            
+        try:
+            print("\n🎤 Loading Parler-TTS (storytelling model)...")
+            print("   This may take 30-60 seconds...")
+            start = time.time()
+            
+            self.parler_model = ParlerTTSForConditionalGeneration.from_pretrained(
+                "parler-tts/parler-tts-mini-v1"
+            ).to(self.device)
+            
+            self.parler_tokenizer = AutoTokenizer.from_pretrained(
+                "parler-tts/parler-tts-mini-v1"
+            )
+            
+            self.parler_loaded = True
+            print(f"✅ Parler-TTS loaded in {time.time()-start:.1f}s")
+            print("   Ready for audiobook-style narration!\n")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️  Parler-TTS failed to load: {str(e)[:80]}")
+            print("   Will use gTTS instead\n")
+            return False
     
-    def clean_story_text(self, text):
-        """Clean unwanted content from generated story"""
-        spam_markers = [
-            'Forum', 'Topics', 'Posts', 'Last post', 'As always,', 'Thank you',
-            'Follow us', 'Posted by', 'Email me', 'http', 'www.', '@'
-        ]
-        
-        for marker in spam_markers:
+    def clean_text(self, text):
+        """Clean generated story"""
+        spam = ['Forum', 'Topics', 'Posted by', 'Follow us', '@', 'http', 'www.']
+        for marker in spam:
             if marker.lower() in text.lower():
                 pos = text.lower().find(marker.lower())
-                before_text = text[:pos]
-                last_period = max(before_text.rfind('.'), before_text.rfind('!'), before_text.rfind('?'))
-                if last_period > len(before_text) * 0.3:
-                    text = before_text[:last_period + 1]
-                    break
+                text = text[:pos]
+                break
         
-        # Remove URLs, emails, mentions
         text = re.sub(r'\S+@\S+\.\S+', '', text)
         text = re.sub(r'https?://\S+', '', text)
         text = re.sub(r'www\.\S+', '', text)
-        text = re.sub(r'@\w+', '', text)
-        
         text = ' '.join(text.split())
         
-        if text and not text.rstrip().endswith(('.', '!', '?', '"')):
-            for ending in ['. ', '! ', '? ', '."', '!"', '?"']:
-                last_sentence = text.rfind(ending)
-                if last_sentence > len(text) * 0.6:
-                    text = text[:last_sentence + 1]
-                    break
+        if not text.endswith(('.', '!', '?')):
+            last = max(text.rfind('.'), text.rfind('!'), text.rfind('?'))
+            if last > len(text) * 0.6:
+                text = text[:last + 1]
         
         return text.strip()
     
-    def ensure_single_complete_story(self, text):
-        """Ensure single complete story"""
-        text = self.clean_story_text(text)
+    def generate_story(self, prompt, target_words=300, style="standard", tone="neutral"):
+        """Generate story with user customization"""
+        self.load_story_model()
         
-        story_starters = [
-            'Once upon a time', 'One day', 'Long ago',
-            'In a magical land', 'There once was', 'Many years ago'
-        ]
+        print(f"\n📝 Generating story...")
+        print(f"   Length: ~{target_words} words")
+        print(f"   Style: {style}")
+        print(f"   Tone: {tone}\n")
         
-        starter_positions = []
-        for starter in story_starters:
-            pos = 0
-            while True:
-                pos = text.find(starter, pos)
-                if pos == -1:
-                    break
-                if pos == 0 or (pos > 0 and text[pos-2:pos] in ['. ', '! ', '? ']):
-                    starter_positions.append(pos)
-                pos += len(starter)
+        # Apply style modifications to prompt
+        style_prompts = {
+            "fairy_tale": "Once upon a time, in a magical kingdom, ",
+            "adventure": "In a land of adventure and mystery, ",
+            "sci_fi": "In a future filled with technology and wonder, ",
+            "mystery": "On a dark and mysterious night, ",
+            "comedy": "In a funny and silly world, ",
+            "standard": random.choice([
+                "Once upon a time, ", 
+                "One day, ", 
+                "Long ago, ", 
+                "In a magical land, "
+            ])
+        }
         
-        if len(starter_positions) > 1:
-            first_story = text[starter_positions[0]:starter_positions[1]]
-            for ending in ['. ', '! ', '? ']:
-                last_end = first_story.rfind(ending)
-                if last_end > len(first_story) * 0.5:
-                    text = text[starter_positions[0]:starter_positions[0] + last_end + 1]
-                    break
+        # Apply tone to temperature
+        tone_settings = {
+            "neutral": {"temp": 0.7, "rep_penalty": 1.3},
+            "serious": {"temp": 0.6, "rep_penalty": 1.4},
+            "playful": {"temp": 0.8, "rep_penalty": 1.2},
+            "dramatic": {"temp": 0.75, "rep_penalty": 1.3},
+            "whimsical": {"temp": 0.85, "rep_penalty": 1.1}
+        }
         
-        sentences = text.split('.')
-        if len(sentences) > 2:
-            last_sentence = sentences[-1].strip()
-            if len(last_sentence) < 10 or not any(last_sentence.endswith(p) for p in ['!', '?', '"', '.']):
-                text = '. '.join(sentences[:-1]) + '.'
+        settings = tone_settings.get(tone, tone_settings["neutral"])
+        prefix = style_prompts.get(style, style_prompts["standard"])
         
-        text = ' '.join(text.split())
-        if text and not text[-1] in '.!?"':
-            text += '.'
+        # Add prefix if prompt doesn't already have one
+        if not any(prompt.lower().startswith(s.lower()[:10]) for s in style_prompts.values()):
+            full_prompt = prefix + prompt
+        else:
+            full_prompt = prompt
         
-        return text.strip()
+        tokens = int(target_words * 1.3)
+        start = time.time()
+        
+        output = self.story_gen(
+            full_prompt,
+            max_new_tokens=tokens,
+            min_new_tokens=int(tokens * 0.6),
+            temperature=settings["temp"],
+            do_sample=True,
+            top_k=50,
+            top_p=0.9,
+            repetition_penalty=settings["rep_penalty"],
+            pad_token_id=50256,
+            eos_token_id=50256,
+            early_stopping=True,
+            no_repeat_ngram_size=3
+        )
+        
+        story = self.clean_text(output[0]["generated_text"])
+        word_count = len(story.split())
+        
+        print(f"✅ Story generated in {time.time()-start:.1f}s")
+        print(f"   Words: {word_count}\n")
+        
+        self.current_story = story
+        return story
     
-    def generate_story(self, prompt, max_tokens=400, progress_bar=None):
-        """Generate complete story"""
-        if not self.model_loaded or self.story_generator is None:
-            raise Exception("Story model not loaded. Please refresh the page.")
+    def text_to_speech_parler(self, text, voice_num=1):
+        """Generate audio with Parler-TTS"""
+        if not self.load_parler_model():
+            return None
         
-        enhanced_prompt = self.enhance_story_prompt(prompt)
+        voice = self.VOICES[voice_num]
+        print(f"\n🎤 Generating audio with Parler-TTS...")
+        print(f"   Voice: {voice['name']}")
+        print(f"   Style: {voice['parler'][:60]}...")
         
-        if progress_bar:
-            progress_bar.progress(30)
+        start = time.time()
         
-        try:
-            story_output = self.story_generator(
-                enhanced_prompt,
-                max_new_tokens=max_tokens,
-                min_new_tokens=int(max_tokens * 0.6),
-                temperature=0.7,
-                do_sample=True,
-                top_k=50,
-                top_p=0.9,
-                repetition_penalty=1.3,
-                num_return_sequences=1,
-                pad_token_id=50256,
-                eos_token_id=50256,
-                early_stopping=True,
-                no_repeat_ngram_size=3
+        input_ids = self.parler_tokenizer(voice["parler"], return_tensors="pt").input_ids.to(self.device)
+        prompt_input_ids = self.parler_tokenizer(text, return_tensors="pt").input_ids.to(self.device)
+        
+        with torch.no_grad():
+            generation = self.parler_model.generate(
+                input_ids=input_ids,
+                prompt_input_ids=prompt_input_ids,
+                attention_mask=torch.ones_like(input_ids)
             )
-            
-            if progress_bar:
-                progress_bar.progress(60)
-            
-            story_text = story_output[0]["generated_text"]
-            story_text = self.ensure_single_complete_story(story_text)
-            
-            if progress_bar:
-                progress_bar.progress(100)
-            
-            return story_text
-            
-        except Exception as e:
-            st.error(f"Story generation failed: {str(e)}")
-            raise
+        
+        audio = generation.cpu().numpy().squeeze()
+        sample_rate = self.parler_model.config.sampling_rate
+        
+        duration = len(audio) / sample_rate
+        print(f"✅ Audio generated in {time.time()-start:.1f}s")
+        print(f"   Duration: {duration:.1f}s\n")
+        
+        return audio, sample_rate
     
-    def split_into_chunks(self, text, max_chars=150):
-        """Split text into smaller chunks for memory efficiency"""
-        sentences = []
-        current = ""
+    def text_to_speech_gtts(self, text, voice_num=1):
+        """Generate audio with gTTS"""
+        voice = self.VOICES[voice_num]
+        print(f"\n🎤 Generating audio with gTTS...")
+        print(f"   Voice: {voice['name']}")
         
-        for char in text:
-            current += char
-            if char in '.!?' and len(current) > 20:
-                sentences.append(current.strip())
-                current = ""
+        start = time.time()
         
-        if current.strip():
-            sentences.append(current.strip())
+        tts = gTTS(text=text, lang='en', tld=voice["gtts_tld"], slow=False)
+        filename = "story_audio.mp3"
+        tts.save(filename)
         
-        chunks = []
-        current_chunk = ""
+        duration = len(text.split()) / 2.5
+        print(f"✅ Audio generated in {time.time()-start:.1f}s")
+        print(f"   Estimated duration: {duration:.1f}s\n")
         
-        for sentence in sentences:
-            if len(current_chunk) + len(sentence) < max_chars:
-                current_chunk += " " + sentence
-            else:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                current_chunk = sentence
-        
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-        
-        return chunks
+        return filename
     
-    def text_to_speech_bark(self, text, voice_preset, progress_bar=None):
-        """Convert text to speech using Bark TTS with memory optimization"""
-        try:
-            chunks = self.split_into_chunks(text, max_chars=150)  # Smaller chunks
-            audio_segments = []
-            sample_rate = None
+    def generate_audio(self, story=None, voice_num=1, engine="auto"):
+        """Generate audio for story"""
+        if story is None:
+            story = self.current_story
             
-            total_chunks = len(chunks)
-            
-            for i, chunk in enumerate(chunks):
-                if progress_bar:
-                    progress = int((i / total_chunks) * 100)
-                    progress_bar.progress(progress)
-                
-                # Add narration markers
-                if i == 0:
-                    narration_chunk = f"♪ [reading story] ♪ {chunk}"
-                else:
-                    narration_chunk = f"♪ {chunk}"
-                
-                # Process with Bark
-                inputs = self.processor(
-                    narration_chunk,
-                    voice_preset=voice_preset,
-                    return_tensors="pt"
-                )
-                
-                # Generate audio
-                with torch.no_grad():
-                    speech_output = self.bark_model.generate(
-                        **inputs,
-                        temperature=0.7,
-                        fine_temperature=0.5,
-                        coarse_temperature=0.7,
-                        do_sample=True,
-                        semantic_temperature=0.8
-                    )
-                    audio_array = speech_output.cpu().numpy().squeeze()
-                
-                audio_segments.append(audio_array)
-                
-                if sample_rate is None:
-                    sample_rate = self.bark_model.generation_config.sample_rate
-                
-                # Clear memory after each chunk
-                del inputs, speech_output
-                gc.collect()
-            
-            # Combine audio segments
-            silence = np.zeros(int(sample_rate * 0.3))
-            full_audio_parts = []
-            
-            for i, segment in enumerate(audio_segments):
-                full_audio_parts.append(segment)
-                if i < len(audio_segments) - 1:
-                    full_audio_parts.append(silence)
-            
-            full_audio = np.concatenate(full_audio_parts)
-            
-            if progress_bar:
-                progress_bar.progress(100)
-            
-            return full_audio, sample_rate, "wav"
-            
-        except Exception as e:
-            st.warning(f"⚠️ Bark TTS failed: {str(e)[:100]}")
-            raise
-    
-    def text_to_speech_gtts(self, text, voice_config, progress_bar=None):
-        """Convert text to speech using gTTS (fallback)"""
-        try:
-            if progress_bar:
-                progress_bar.progress(30)
-            
-            tts = gTTS(
-                text=text,
-                lang=voice_config['gtts_lang'],
-                tld=voice_config['gtts_tld'],
-                slow=False
-            )
-            
-            if progress_bar:
-                progress_bar.progress(60)
-            
-            output_file = "story_audio.mp3"
-            tts.save(output_file)
-            
-            if progress_bar:
-                progress_bar.progress(100)
-            
-            return output_file, None, "mp3"
-            
-        except Exception as e:
-            st.error(f"❌ gTTS failed: {str(e)}")
-            raise
-    
-    def text_to_speech(self, text, voice_config, progress_bar=None):
-        """Convert text to speech with automatic fallback"""
-        # Try Bark first if available
-        if self.bark_available and self.bark_model is not None:
+        if story is None:
+            print("❌ No story available. Generate a story first!")
+            return None
+        
+        # Determine which engine to use
+        if engine == "auto":
+            use_parler = PARLER_AVAILABLE and ParlerTTSForConditionalGeneration is not None
+        elif engine == "parler":
+            use_parler = PARLER_AVAILABLE and ParlerTTSForConditionalGeneration is not None
+            if not use_parler:
+                print("⚠️  Parler-TTS not available, using gTTS")
+        else:
+            use_parler = False
+        
+        # Generate audio
+        if use_parler:
             try:
-                st.info("🎤 Using Bark TTS for high-quality narration...")
-                audio_data, sample_rate, format_type = self.text_to_speech_bark(
-                    text,
-                    voice_config['preset'],
-                    progress_bar
-                )
-                return audio_data, sample_rate, format_type
-                
-            except Exception as bark_error:
-                st.warning(f"⚠️ Bark TTS failed, switching to gTTS...")
-                # Disable Bark for future calls in this session
-                self.bark_available = False
+                audio, rate = self.text_to_speech_parler(story, voice_num)
+                if audio is not None:
+                    filename = "story_narration.wav"
+                    sf.write(filename, audio, rate)
+                    print(f"💾 Saved: {filename}")
+                    display(Audio(filename, autoplay=False))
+                    return filename
+            except Exception as e:
+                print(f"⚠️  Parler-TTS error: {str(e)[:80]}")
+                print("🔄 Switching to gTTS...\n")
         
-        # Use gTTS
-        st.info("🎤 Using Google TTS for narration...")
-        return self.text_to_speech_gtts(text, voice_config, progress_bar)
+        # Use gTTS (fallback or by choice)
+        filename = self.text_to_speech_gtts(story, voice_num)
+        display(Audio(filename, autoplay=False))
+        return filename
 
 
-def get_audio_download_link(audio_data, sample_rate=None, format_type="mp3"):
-    """Create download link for audio"""
-    try:
-        if format_type == "wav" and sample_rate:
-            # Bark TTS output
-            filename = "story_audio.wav"
-            audio_int16 = (audio_data * 32767).astype(np.int16)
-            scipy.io.wavfile.write(filename, sample_rate, audio_int16)
-            
-            with open(filename, "rb") as f:
-                audio_bytes = f.read()
-            
-            b64 = base64.b64encode(audio_bytes).decode()
-            return f'<a href="data:audio/wav;base64,{b64}" download="story.wav" style="color: white; text-decoration: none; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 10px 20px; border-radius: 5px; display: inline-block; margin-top: 10px;">📥 Download Audio Story (WAV)</a>'
-            
-        elif format_type == "mp3":
-            # gTTS output
-            with open(audio_data, "rb") as f:
-                audio_bytes = f.read()
-            
-            b64 = base64.b64encode(audio_bytes).decode()
-            return f'<a href="data:audio/mp3;base64,{b64}" download="story.mp3" style="color: white; text-decoration: none; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 10px 20px; border-radius: 5px; display: inline-block; margin-top: 10px;">📥 Download Audio Story (MP3)</a>'
+# ========================================
+# USER INTERFACE FUNCTIONS
+# ========================================
+
+def create_story_interactive():
+    """Interactive story creation with user control"""
+    gen = StorytellingGenerator()
+    
+    print("\n" + "="*70)
+    print("📚 AI STORY GENERATOR - INTERACTIVE MODE")
+    print("="*70)
+    
+    # Step 1: Get story parameters
+    print("\n📝 STEP 1: STORY CUSTOMIZATION")
+    print("-" * 70)
+    
+    prompt = input("\n💡 Enter your story idea/prompt:\n   → ").strip()
+    if not prompt:
+        prompt = "a brave adventurer discovering a magical world"
+        print(f"   (Using default: {prompt})")
+    
+    print("\n📏 Choose story length:")
+    print("   1. Short (150 words)")
+    print("   2. Medium (300 words)")
+    print("   3. Long (500 words)")
+    length_choice = input("   → ").strip()
+    length_map = {"1": 150, "2": 300, "3": 500}
+    target_words = length_map.get(length_choice, 300)
+    
+    print("\n🎨 Choose story style:")
+    print("   1. Fairy Tale (classic once upon a time)")
+    print("   2. Adventure (exciting journey)")
+    print("   3. Sci-Fi (futuristic)")
+    print("   4. Mystery (suspenseful)")
+    print("   5. Comedy (funny)")
+    print("   6. Standard (flexible)")
+    style_choice = input("   → ").strip()
+    style_map = {
+        "1": "fairy_tale", "2": "adventure", "3": "sci_fi",
+        "4": "mystery", "5": "comedy", "6": "standard"
+    }
+    style = style_map.get(style_choice, "standard")
+    
+    print("\n🎭 Choose story tone:")
+    print("   1. Neutral (balanced)")
+    print("   2. Serious (formal)")
+    print("   3. Playful (fun)")
+    print("   4. Dramatic (intense)")
+    print("   5. Whimsical (imaginative)")
+    tone_choice = input("   → ").strip()
+    tone_map = {
+        "1": "neutral", "2": "serious", "3": "playful",
+        "4": "dramatic", "5": "whimsical"
+    }
+    tone = tone_map.get(tone_choice, "neutral")
+    
+    # Step 2: Generate story
+    print("\n" + "="*70)
+    print("📖 STEP 2: GENERATING STORY")
+    print("="*70)
+    
+    story = gen.generate_story(prompt, target_words, style, tone)
+    
+    # Display story
+    print("\n" + "="*70)
+    print("📖 YOUR GENERATED STORY")
+    print("="*70)
+    print(f"\n{story}\n")
+    print("="*70)
+    print(f"📊 Statistics: {len(story.split())} words, {len(story)} characters")
+    print("="*70)
+    
+    # Step 3: Ask for audio permission
+    print("\n" + "="*70)
+    print("🎤 STEP 3: AUDIO NARRATION (OPTIONAL)")
+    print("="*70)
+    
+    audio_choice = input("\n🔊 Would you like to generate audio narration? (yes/no): ").strip().lower()
+    
+    if audio_choice in ['yes', 'y', 'yeah', 'sure', 'ok']:
+        print("\n🎙️  Choose narrator voice:")
+        print("   1. Warm Storyteller (bedtime stories)")
+        print("   2. Dramatic Narrator (epic tales)")
+        print("   3. Calm Narrator (peaceful)")
+        print("   4. Energetic Narrator (exciting)")
+        print("   5. Mysterious Narrator (suspenseful)")
+        voice_choice = input("   → ").strip()
+        voice_num = int(voice_choice) if voice_choice in "12345" else 1
         
-    except Exception as e:
-        st.error(f"Error creating download link: {str(e)}")
-        return ""
+        print("\n🎤 Choose audio engine:")
+        print("   1. Parler-TTS (best quality, slower)")
+        print("   2. gTTS (fast, reliable)")
+        print("   3. Auto (use best available)")
+        engine_choice = input("   → ").strip()
+        engine_map = {"1": "parler", "2": "gtts", "3": "auto"}
+        engine = engine_map.get(engine_choice, "auto")
+        
+        print("\n" + "="*70)
+        print("🎵 GENERATING AUDIO")
+        print("="*70)
+        
+        filename = gen.generate_audio(story, voice_num, engine)
+        
+        print("\n" + "="*70)
+        print("✅ COMPLETE!")
+        print("="*70)
+        print(f"📁 Audio file: {filename}")
+        print("🎧 Play the audio above")
+        print("📥 Download from Colab's file browser")
+        print("="*70)
+    else:
+        print("\n✅ Story generation complete!")
+        print("   You can generate audio later by calling:")
+        print("   gen.generate_audio(story, voice_num=1, engine='auto')")
+    
+    return gen, story
 
 
-def main():
-    # Header
-    st.markdown("""
-    <div class="title-box">
-        <h1>📚 AI Story Generator</h1>
-        <p class="subtitle">Create magical stories with AI narration</p>
-    </div>
-    """, unsafe_allow_html=True)
+def quick_story(prompt, words=300, style="standard", tone="neutral", 
+                voice=1, audio=True, engine="auto"):
+    """Quick story generation with single function"""
+    gen = StorytellingGenerator()
     
-    # Initialize generator with loading feedback
-    if 'generator' not in st.session_state:
-        with st.spinner("🔮 Loading AI models... This may take 60-90 seconds on first load"):
-            st.session_state.generator = StreamlitStoryGenerator()
-        
-        # Show loading messages
-        if st.session_state.generator.loading_messages:
-            with st.expander("📋 Loading Details", expanded=True):
-                for msg in st.session_state.generator.loading_messages:
-                    st.write(msg)
-        
-        if not st.session_state.generator.model_loaded:
-            st.error("❌ Failed to load story model. Please refresh the page.")
-            st.stop()
-        else:
-            st.success(f"✅ Models loaded! Using {st.session_state.generator.tts_method}")
+    print("\n" + "="*70)
+    print("📚 QUICK STORY GENERATION")
+    print("="*70)
     
-    generator = st.session_state.generator
+    # Generate story
+    story = gen.generate_story(prompt, words, style, tone)
     
-    # Sidebar configuration
-    with st.sidebar:
-        if generator.bark_available:
-            st.success(f"🎤 Audio: **{generator.tts_method}** ✨")
-        else:
-            st.info(f"🎤 Audio: **{generator.tts_method}**")
-        
-        st.header("⚙️ Story Settings")
-        
-        # Voice selection
-        st.subheader("🎙️ Choose Narrator")
-        voice_name = st.selectbox(
-            "Select voice",
-            options=list(generator.VOICE_PROFILES.keys()),
-            help="Each voice has a unique personality"
-        )
-        voice_info = generator.VOICE_PROFILES[voice_name]
-        st.caption(voice_info["description"])
-        
-        st.divider()
-        
-        # Length selection
-        st.subheader("📏 Story Length")
-        length_name = st.selectbox(
-            "Select length",
-            options=list(generator.STORY_LENGTHS.keys()),
-            help="Longer stories take more time to generate"
-        )
-        length_info = generator.STORY_LENGTHS[length_name]
-        st.caption(f"Approximately {length_info['words']} words")
-        
-        st.divider()
-        
-        # Info
-        st.info("💡 **Tips:**\n- Simple prompts work best\n- Be creative with themes\n- Generation takes 1-3 minutes")
-        
-        # TTS Info
-        if generator.bark_available:
-            st.success("⚡ Bark TTS active!\nHigh-quality narration enabled")
-        else:
-            st.warning("⚡ Using gTTS fallback\nFast and reliable audio")
+    # Display story
+    print("\n" + "="*70)
+    print("📖 YOUR STORY")
+    print("="*70)
+    print(f"\n{story}\n")
+    print("="*70)
     
-    # Main content
-    col1, col2 = st.columns([2, 1])
+    # Generate audio if requested
+    if audio:
+        print("\n🔊 Audio generation enabled")
+        audio_file = gen.generate_audio(story, voice, engine)
+    else:
+        print("\n⏭️  Audio generation skipped")
+        audio_file = None
     
-    with col1:
-        st.header("✍️ Your Story Prompt")
-        
-        # Story input
-        story_prompt = st.text_area(
-            "Describe your story:",
-            placeholder="Example: a brave knight discovered a dragon's lair deep in the mountains\n\nOr try: a curious cat who loved to explore magical forests",
-            height=120,
-            help="Describe the characters, setting, or theme you want"
-        )
-        
-        # Example prompts
-        with st.expander("Need inspiration? Try these examples:"):
-            examples = [
-                "a young wizard learning magic at a secret school",
-                "a detective solving a mysterious case in an old mansion",
-                "a friendly robot who wanted to become a painter",
-                "a girl who could talk to animals in the forest",
-                "a pirate searching for hidden treasure on a remote island",
-                "a time traveler visiting the age of dinosaurs"
-            ]
-            for ex in examples:
-                if st.button(f"📝 {ex}", key=ex, use_container_width=True):
-                    story_prompt = ex
-                    st.rerun()
-    
-    with col2:
-        st.header("🎬 Generate")
-        
-        if st.button("✨ Create Story", type="primary", use_container_width=True):
-            if not story_prompt or len(story_prompt.strip()) < 10:
-                st.error("⚠️ Please enter a story prompt (at least 10 characters)")
-            else:
-                try:
-                    # Story generation
-                    st.markdown("### 📖 Generating Story...")
-                    progress_story = st.progress(0)
-                    
-                    with st.spinner("Crafting your tale..."):
-                        story_text = generator.generate_story(
-                            story_prompt,
-                            max_tokens=length_info['tokens'],
-                            progress_bar=progress_story
-                        )
-                    
-                    st.success("✅ Story generated!")
-                    
-                    # Display story
-                    st.markdown("### 📜 Your Story")
-                    st.markdown(f"""
-                    <div class="story-box">
-                        {story_text}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Audio generation
-                    st.markdown("### 🎤 Generating Audio...")
-                    progress_audio = st.progress(0)
-                    
-                    with st.spinner("Creating narration..."):
-                        audio_result, sample_rate, format_type = generator.text_to_speech(
-                            story_text,
-                            voice_info,
-                            progress_bar=progress_audio
-                        )
-                    
-                    st.success(f"✅ Audio complete using {generator.tts_method}!")
-                    
-                    # Audio player
-                    st.markdown("### 🔊 Listen to Your Story")
-                    
-                    if format_type == "wav":
-                        filename = "story_audio.wav"
-                        audio_int16 = (audio_result * 32767).astype(np.int16)
-                        scipy.io.wavfile.write(filename, sample_rate, audio_int16)
-                        st.audio(filename, format="audio/wav")
-                        duration = len(audio_result) / sample_rate
-                    else:
-                        st.audio(audio_result, format="audio/mp3")
-                        word_count = len(story_text.split())
-                        duration = word_count / 2.5
-                    
-                    # Download button
-                    st.markdown(
-                        get_audio_download_link(audio_result, sample_rate, format_type),
-                        unsafe_allow_html=True
-                    )
-                    
-                    # Stats
-                    word_count = len(story_text.split())
-                    
-                    st.markdown(f"""
-                    <div class="success-box">
-                        <h3>📊 Story Statistics</h3>
-                        <p>📝 Words: {word_count}</p>
-                        <p>⏱️ Duration: ~{duration:.1f} seconds ({duration/60:.1f} minutes)</p>
-                        <p>🎙️ Voice: {voice_name}</p>
-                        <p>🎤 Engine: {generator.tts_method}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
-                    st.info("Please try again. If using Bark TTS fails, the app will automatically use gTTS.")
-    
-    # Footer
-    st.markdown("---")
-    st.markdown("""
-        <div style='text-align: center; color: white; padding: 20px;'>
-            <p>Powered by AI • TinyStories-33M + Bark TTS (Small) / gTTS</p>
-            <p>Made with ❤️ using Streamlit</p>
-        </div>
-    """, unsafe_allow_html=True)
+    return gen, story, audio_file
 
+
+# ========================================
+# MAIN EXECUTION
+# ========================================
 
 if __name__ == "__main__":
-    main()
+    print("\n" + "="*70)
+    print("📚 AI STORY GENERATOR - USER CONTROLLED")
+    print("="*70)
+    print("\n✨ Features:")
+    print("   • Generate story FIRST, then decide on audio")
+    print("   • Full customization of style, tone, and length")
+    print("   • Choose voice and audio engine")
+    print("   • Parler-TTS for audiobook quality or gTTS for speed")
+    
+    print("\n" + "="*70)
+    print("🚀 USAGE OPTIONS")
+    print("="*70)
+    
+    print("\n1️⃣  INTERACTIVE MODE (Recommended):")
+    print("   gen, story = create_story_interactive()")
+    print("   → Full control with step-by-step prompts")
+    
+    print("\n2️⃣  QUICK MODE (One-liner):")
+    print("   gen, story, audio = quick_story(")
+    print("       prompt='a dragon adventure',")
+    print("       words=300,")
+    print("       style='adventure',")
+    print("       tone='dramatic',")
+    print("       voice=2,")
+    print("       audio=True,")
+    print("       engine='auto'")
+    print("   )")
+    
+    print("\n3️⃣  MANUAL CONTROL:")
+    print("   gen = StorytellingGenerator()")
+    print("   story = gen.generate_story('your prompt', 300, 'fairy_tale', 'playful')")
+    print("   # Review story, then:")
+    print("   audio = gen.generate_audio(story, voice_num=1, engine='parler')")
+    
+    print("\n" + "="*70)
+    print("📖 STYLE OPTIONS: fairy_tale, adventure, sci_fi, mystery, comedy, standard")
+    print("🎭 TONE OPTIONS: neutral, serious, playful, dramatic, whimsical")
+    print("🎙️  VOICES: 1-5 (Warm, Dramatic, Calm, Energetic, Mysterious)")
+    print("🎤 ENGINES: parler (best), gtts (fast), auto (smart choice)")
+    print("="*70)
+    
+    # Auto-start interactive mode
+    print("\n🎬 Starting Interactive Mode in 3 seconds...")
+    print("   (Or interrupt and call functions manually)")
+    time.sleep(3)
+    
+    gen, story = create_story_interactive()
+
+
+# ========================================
+# EXAMPLES FOR REFERENCE
+# ========================================
+
+"""
+📚 EXAMPLE USAGE:
+
+# 1. Interactive (best for beginners)
+gen, story = create_story_interactive()
+
+# 2. Quick story with audio
+gen, story, audio = quick_story(
+    "a robot learning to love",
+    words=200,
+    style="sci_fi",
+    tone="playful",
+    voice=4,
+    audio=True,
+    engine="auto"
+)
+
+# 3. Story only, audio later
+gen, story, _ = quick_story(
+    "a mysterious castle",
+    words=300,
+    style="mystery",
+    audio=False  # No audio yet
+)
+# Later, after reading the story:
+audio = gen.generate_audio(story, voice=5, engine="parler")
+
+# 4. Full manual control
+gen = StorytellingGenerator()
+story = gen.generate_story(
+    prompt="a magical cat",
+    target_words=250,
+    style="fairy_tale",
+    tone="whimsical"
+)
+print(story)
+# Decide if you want audio:
+audio = gen.generate_audio(story, voice_num=1, engine="auto")
+"""
