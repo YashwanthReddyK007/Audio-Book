@@ -1,11 +1,10 @@
-# Install core packages
-pip install streamlit torch transformers accelerate
-
-# Install audio packages
-pip install soundfile scipy sentencepiece gTTS
-
-# Install protobuf (specific version to avoid conflicts)
-pip install protobuf==4.25.3
-
-# Install Parler-TTS (optional, for premium audio)
-pip install git+https://github.com/huggingface/parler-tts.git
+streamlit>=1.28.0
+torch>=2.0.0
+transformers>=4.38.0
+accelerate>=0.24.0
+soundfile>=0.12.1
+scipy>=1.11.0
+sentencepiece>=0.1.99
+protobuf>=4.25.0,<5.0.0
+gTTS>=2.4.0
+numpy>=1.24.0
