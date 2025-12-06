@@ -1,20 +1,11 @@
-# Core Framework
-streamlit
+# Install core packages
+pip install streamlit torch transformers accelerate
 
-# Story Generation
-transformers
-torch
-accelerate
+# Install audio packages
+pip install soundfile scipy sentencepiece gTTS
 
-# Audio Generation - Bark TTS (small) + gTTS fallback
-gTTS
-scipy
+# Install protobuf (specific version to avoid conflicts)
+pip install protobuf==4.25.3
 
-# Basic dependencies
-numpy
-requests
-sentencepiece
-protobuf
-
-# Optional: Uncomment if scipy installation fails
-# --extra-index-url https://download.pytorch.org/whl/cpu
+# Install Parler-TTS (optional, for premium audio)
+pip install git+https://github.com/huggingface/parler-tts.git
